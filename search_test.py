@@ -1,39 +1,80 @@
+import random
 import numpy as np
 import math
 import matplotlib.pyplot as plt
 import time
+from datetime import datetime
 
-def generate_sample():
-    sampling_freq = 512000
-    length = 2              # Length of sample
-    frequency = 40000       # Ping frequency
-    ping_length = 0.004     # Duration of ping in seconds
-    ping_amplitude = 10
+# All units are metric. Distance is in meters
+class SampleGenerator:
+    micSpacing = 0.012
+    speedOfSound = 1531
+    maxDistance = 20
+    sampleRate = 512000
+    sampleLength = 2048
+    numOfMics = 3
+    pingFrequency = 25000
+    pingDuration = 0.001
+    noiseAmplitude = 2
+    radiansPerSample = pingFrequency / sampleRate * 2 * math.pi
 
-    num_data_points = sampling_freq * length
-    start_time = np.random.randint(num_data_points // 10, num_data_points * 9 // 10)
+    # Position of each microphone in XYZ order
+    micPositions = np.array([
+        [0, 0, 0],
+        [0, micSpacing, 0],
+        [micSpacing, 0, 0]
+    ])
 
-    #print(start_time/sampling_freq)
+    def __init__(self, batchSize=0):
+        self.batchSize = batchSize
 
-    data = np.zeros(num_data_points)
+    def generateSample(self, *args):
+        # Generate origin of the sound
+        origin = np.array([
+            random.uniform(-self.maxDistance, self.maxDistance),
+            random.uniform(-self.maxDistance, self.maxDistance),
+            random.uniform(-self.maxDistance, 0),
+        ])
 
-    # Fill in the ping in the randomly selected spot
-    for i in range(int(ping_length * sampling_freq)):
-        val = ping_amplitude * math.cos((2 * math.pi * frequency / sampling_freq * i) + 1.0 )
-        data[start_time + i] = val
+        # Compute distance to each microphone
+        distances = np.zeros(self.numOfMics)
+        for i in range(self.numOfMics):
+            distances[i] = np.linalg.norm(self.micPositions[i] - origin)
 
-    # Get fft data of clean signal to do testing
-    clean_fft = np.fft.fft(data[start_time:start_time + int(ping_length * sampling_freq)])
-    frequency_offset = round(frequency * int(ping_length * sampling_freq) / sampling_freq)
-    frequency_data = clean_fft[frequency_offset]
+        # Compute time offsets in samples caused by distance differences
+        timeOffsets = (distances - np.min(distances)) / self.speedOfSound * self.sampleRate
 
-    # Add noise
-    data += 1.0 * (2 * np.random.normal(0, 1, num_data_points) - 1)
+        # Apply the ping to each waveform
+        startTime = random.uniform(self.sampleLength * .1, self.sampleLength * .9 - self.pingDuration * self.sampleRate)
+        waveforms = np.zeros((self.numOfMics, self.sampleLength))
+        for micIndex in range(self.numOfMics):
+            micStart = startTime + timeOffsets[micIndex]
+            #print("Mic",micIndex,"start index:",int(micStart))
+            for i in range(int(self.sampleRate * self.pingDuration)):
+                currentIndex = int(micStart) + i
+                waveforms[micIndex][currentIndex] = math.sin((currentIndex - micStart) * self.radiansPerSample)
 
-    # Plot
-    #plt.plot(data)
-    #plt.show()
-    return (data, (start_time/sampling_freq), frequency_data)
+        # Add noise
+        waveforms += np.random.uniform(-self.noiseAmplitude, self.noiseAmplitude, (self.numOfMics,self.sampleLength))
+        waveforms /= np.std(waveforms)
+
+        # Generate label by normalizing vector
+        label = origin / np.linalg.norm(origin)
+
+        return waveforms, label, timeOffsets
+
+    def generateSamples(self, size=None):
+        if size is None:
+            size = self.batchSize
+
+        # Process each sample simultaneously
+        results = []
+        for _ in range(size):
+            results.append(self.generateSample())
+
+        # Output
+        return [result[0] for result in results], [result[1] for result in results], [result[2] for result in results]
+
 
 class InvalidInputException(Exception):
     pass
@@ -45,14 +86,16 @@ class PingerLocator:
 
     # Given Constants
     SAMPLING_FREQUENCY = 512000  # Sampling Frequency in Hz
-    PINGER_DURATION = 0.004      # Duration of the ping in seconds
+    PINGER_DURATION = 0.001      # Duration of the ping in seconds
     VALID_FREQUENCIES = range(25000, 41000, 1000)
     SAMPLE_SIZE = 2              # Size of the expected sample in seconds
+    SPEED_OF_SOUND = 1531        # The speed of sound in whatever medium this code is being run for, in meters/second
+    MICROPHONE_DISTANCE = 0.012  # The distance between the microphones in meters
+
 
     # Customizable Thresholds
     SEGMENT_SEARCH_SIZE = 0.005  # Size in seconds to do the first search with
     SEARCH_THRESHOLD = 1.5       # The minimum percent difference (expressed as a decimal) for a maximum value to contain a signal
-    NEIGHBOR_THRESHOLD = 0.1     # The maximum percent difference between magnitudes neighboring the maximum signal
 
     def __init__(self, target_frequency):
         if target_frequency not in self.VALID_FREQUENCIES:
@@ -78,7 +121,16 @@ class PingerLocator:
             raise InvalidInputException("Invalid Preset: Pinger Duration longer than segment search size")
 
     def search_segment(self, microphone_data):
-        #print("Searching For {} khz pinger".format(self.target_frequency/1000))
+        """Searches input microphone data for a pulse and returns its location
+        The input microphone data must conform to the constants declared in this class
+
+        Args:
+            microphone_data: A numpy array with the microphone data
+
+        Returns:
+            The time in seconds of the start of the pulse
+
+        """
 
         if len(microphone_data) != self.SAMPLE_SIZE * self.SAMPLING_FREQUENCY:
             raise InvalidInputException("The size of the microphone data does not match the expected size")
@@ -102,13 +154,12 @@ class PingerLocator:
         # Get rough location of maximum value
         max_segment = np.argmax(segment_fft_data)
 
+        # TODO: Find out if this is needed
         # Do check to make sure that the maximum value stands above the average noise of the sample
         segment_mean = np.mean(segment_fft_data)
         percent_difference = (segment_fft_data[max_segment] - segment_mean) / ((segment_fft_data[max_segment]+segment_mean)/2)
         if percent_difference < self.SEARCH_THRESHOLD:
             raise NoSampleFoundException("Threshold not met for maximum value")
-
-        #print("Rough Time of Found Signal:", max_segment * self.SEGMENT_SEARCH_SIZE)
 
         # This is the size of the pinger pulse in samples. This is what is going to be the size of the fine ffts
         pinger_sample_size = round(self.PINGER_DURATION * self.SAMPLING_FREQUENCY)
@@ -132,7 +183,6 @@ class PingerLocator:
         if (end_sample + pinger_sample_size) > len(microphone_data):
             end_sample = len(microphone_data) - pinger_sample_size
 
-        maximum_value = 0
         maximum_magnitude = 0
         maximum_sample_index = -1
         for sample_offset in range(start_sample, end_sample+1):
@@ -143,25 +193,177 @@ class PingerLocator:
             if np.absolute(search_fft[frequency_offset]) > maximum_magnitude:
                 maximum_sample_index = sample_offset
                 maximum_magnitude = np.absolute(search_fft[frequency_offset])
-                maximum_value = search_fft[frequency_offset]
 
         # If no fft had a magnitude greater than 0, then something went terribly wrong
         assert maximum_sample_index != -1
 
-        #print("Exact Time of Found Signal: ", maximum_sample_index / self.SAMPLING_FREQUENCY)
-        return ((maximum_sample_index / self.SAMPLING_FREQUENCY), maximum_value)
+        return (maximum_sample_index / self.SAMPLING_FREQUENCY)
+
+    def get_phase_angle(self, microphone_data):
+        """Gets the phase shift of the given microphone data
+        Note: This assumes that all of the input data contains the pulse
+
+        Args:
+            microphone_data: A numpy array with the microphone data
+
+        Returns:
+            The phase angle of the inputted data as an angle in radians
+        """
+
+        microphone_fft = np.fft.fft(microphone_data)
+        frequency_offset = round(self.target_frequency * len(microphone_data) / self.SAMPLING_FREQUENCY)
+        return np.angle(microphone_fft[frequency_offset])
+
+    def get_ping_indexes(self, microphone_1, microphone_2, microphone_3):
+        """Locates the best location in the sample to find the phase shift
+        This should not be used on large samples, since it does a fine search of the signals without doing a larger search first
+
+        Args:
+            microphone_1, microphone_2, microphone_3: The three microphones to find the times to search
+
+        Returns:
+            A tuple with the start and end samples that cna be used for a fourier transform and contains the signal
+        """
+
+        pinger_sample_size = round(self.PINGER_DURATION * self.SAMPLING_FREQUENCY)
+
+        # Search for pulse in microphone 1
+        microphone_1_maximum_magnitude = 0
+        microphone_1_maximum_sample_index = -1
+        for sample_offset in range(len(microphone_1)-pinger_sample_size):
+            search_fft = np.fft.fft(microphone_1[sample_offset:sample_offset + pinger_sample_size])
+
+            frequency_offset = round(self.target_frequency * pinger_sample_size / self.SAMPLING_FREQUENCY)
+
+            if np.absolute(search_fft[frequency_offset]) > microphone_1_maximum_magnitude:
+                microphone_1_maximum_magnitude = np.absolute(search_fft[frequency_offset])
+                microphone_1_maximum_sample_index = sample_offset
+
+        assert microphone_1_maximum_sample_index != -1
+
+        # Find a start and end index that must contain the ping in all three signals
+        period_length = (1 / self.target_frequency) * self.SAMPLING_FREQUENCY
+        start_index = microphone_1_maximum_sample_index + int(period_length)
+        end_index = microphone_1_maximum_sample_index + pinger_sample_size - int(period_length)
+
+        # Return the valid indexes which contain the entire signal
+        return (start_index, end_index)
 
 
-for i in range(1, 101):
-    locator = PingerLocator(40000)
-    my_sample, generated_time, clean_frequency_data = generate_sample()
-    search_time, recovered_frequency_data = locator.search_segment(my_sample)
+    def get_signal_angle(self, phase_angle_1, phase_angle_2):
+        """Gets the angle of the incoming signal from the first microphone
 
-    if search_time != generated_time:
-        print("Time Test Failed! Difference:", search_time - generated_time,"- Samples:", round((search_time - generated_time) * locator.SAMPLING_FREQUENCY))
-    if np.angle(clean_frequency_data) != np.angle(recovered_frequency_data):
-        percent_difference = abs(np.angle(clean_frequency_data) - np.angle(recovered_frequency_data)) / ((np.angle(clean_frequency_data) + np.angle(recovered_frequency_data)) / 2)
-        print("Phase Test Failed! Difference:", np.angle(clean_frequency_data) - np.angle(recovered_frequency_data),"- Percent Difference:", percent_difference * 100)
+        Args:
+            phase_angle_1: The phase shift of the first microphone's signal in radians
+            phase_angle_2: The phase shift of the second microphone's signal in radians
 
-    if (i % 10) == 0:
-        print("Tested", i, "Samples")
+        Returns:
+            The angle of the incoming signal in radians
+        """
+
+        phase_difference = phase_angle_2 - phase_angle_1
+        wavelength = self.SPEED_OF_SOUND / self.target_frequency
+
+        # Wrap around subtraction into valid range for angle calculations
+        if phase_difference < -1*np.pi:
+            phase_difference = phase_difference + 2*np.pi
+        elif phase_difference > np.pi:
+            phase_difference = phase_difference - 2*np.pi
+
+        # Calculate the angle of the incoming wave based on p hase shift
+        signal_angle_cos = (wavelength * phase_difference) / (2 * np.pi * self.MICROPHONE_DISTANCE)
+        
+        # Fix the cos of the angle if it is outside of the domain of arccos
+        # TODO: Find the error causing the phase difference to be too large for the input
+        broken = 0
+        if signal_angle_cos > 1:
+            signal_angle_cos = 1
+            broken = 1
+        elif signal_angle_cos < -1:
+            signal_angle_cos = -1
+            broken = 1
+
+        # Return the angle of the oncoming signal
+        return np.arccos(signal_angle_cos), broken
+
+    def calc_heading(self, center_microphone_data, x_microphone_data, y_microphone_data):
+        """Calculates the heading of an incoming signal from 3 microphones in a right triangle
+
+        Args:
+            center_microphone_data: A numpy array with the samples from the center microphone
+            x_microphone_data: A numpy array with the samples from the microphone at an x offset of the center
+            y_microphone_data: A numpy array with the samples from the microphone at an y offset of the center
+
+        Returns:
+            A tuple with three elements for the normalized x, y, and z heading
+        """
+
+        # Get the location in the incoming signal of the pulse
+        search_indexes = self.get_ping_indexes(center_microphone_data, x_microphone_data, y_microphone_data)
+
+        # Calculate the phase angle of each of the three signals of the pulse
+        center_phase_angle = self.get_phase_angle(center_microphone_data[search_indexes[0]:search_indexes[1]])
+        x_phase_angle = self.get_phase_angle(x_microphone_data[search_indexes[0]:search_indexes[1]])
+        y_phase_angle = self.get_phase_angle(y_microphone_data[search_indexes[0]:search_indexes[1]])
+
+        # Calculate the x and y angles of the heading
+        x_signal_angle, broken1 = self.get_signal_angle(center_phase_angle, x_phase_angle)
+        y_signal_angle, broken2 = self.get_signal_angle(center_phase_angle, y_phase_angle)
+
+        broken = broken1 + broken2
+
+        # Calculate the three components of the heading as a unit vector
+        signal_x_component = np.cos(x_signal_angle)
+        signal_y_component = np.cos(y_signal_angle)
+        signal_z_component = -np.sqrt(1 - np.power(signal_x_component, 2) - np.power(signal_y_component, 2))
+
+        # Fix for the signal going outside of the expected bounds
+        # TODO: Find the error causing the x and y to have a magnitude > 1
+        if np.isnan(signal_z_component):
+            broken += 4
+            signal_z_component = 0
+
+            # Fix the x and y components so that they have a magnitude equal to 1
+            magnitude = np.linalg.norm(np.array([signal_x_component, signal_y_component]))
+            signal_x_component = signal_x_component / magnitude
+            signal_y_component = signal_y_component / magnitude
+
+        # Create a heading vector with the individual components
+        signal_heading = np.array([signal_x_component, signal_y_component, signal_z_component])
+
+        assert np.linalg.norm(signal_heading) > 0.999 and np.linalg.norm(signal_heading) < 1.001
+
+        return (signal_heading, broken)
+
+
+if __name__ == "__main__":
+    num_samples = 64
+    generator = SampleGenerator(num_samples)
+    startTime = datetime.now()
+    inputs, label, timeOffsets = generator.generateSamples()
+    elapsedTime = datetime.now() - startTime
+
+    angle_difference = np.zeros(num_samples)
+    sample_broken = [-1] * num_samples
+
+    for sample in range(num_samples):
+        locator = PingerLocator(25000)
+        calculated_heading, sample_broken[sample] = locator.calc_heading(inputs[sample][0], inputs[sample][2], inputs[sample][1])
+        print("Generated Heading:", label[sample])
+        print("Calculated Heading:", calculated_heading)
+        print("Angle Difference (deg):",np.arccos(np.dot(calculated_heading, label[sample])) * 180/np.pi)
+        angle_difference[sample] = np.arccos(np.dot(calculated_heading, label[sample])) * 180/np.pi
+        print()
+
+    
+    print("Average Signal Difference: ", np.average(angle_difference))
+
+    # Find if any of the outliers were caused by broken samples
+    Q3 = np.percentile(angle_difference, 75, interpolation = 'midpoint')
+    for sample in range(num_samples):
+        if angle_difference[sample] > Q3 * 1.5:
+            print("Outlier:", angle_difference[sample], "- Broken:", sample_broken[sample])
+
+    plt.boxplot(angle_difference)
+    plt.show()
+
