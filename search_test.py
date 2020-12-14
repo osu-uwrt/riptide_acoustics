@@ -10,11 +10,11 @@ class SampleGenerator:
     micSpacing = 0.012
     speedOfSound = 1531
     maxDistance = 20
-    sampleRate = 512000
+    sampleRate = 100000
     sampleLength = 2048
     numOfMics = 3
     pingFrequency = 25000
-    pingDuration = 0.001
+    pingDuration = 0.004
     noiseAmplitude = 2
     radiansPerSample = pingFrequency / sampleRate * 2 * math.pi
 
@@ -54,6 +54,8 @@ class SampleGenerator:
                 currentIndex = int(micStart) + i
                 waveforms[micIndex][currentIndex] = math.sin((currentIndex - micStart) * self.radiansPerSample)
 
+        noNoise = waveforms.copy()
+
         # Add noise
         waveforms += np.random.uniform(-self.noiseAmplitude, self.noiseAmplitude, (self.numOfMics,self.sampleLength))
         waveforms /= np.std(waveforms)
@@ -61,7 +63,7 @@ class SampleGenerator:
         # Generate label by normalizing vector
         label = origin / np.linalg.norm(origin)
 
-        return waveforms, label, timeOffsets
+        return waveforms, label, (int(startTime + np.max(timeOffsets)), int(startTime) + int(self.sampleRate * self.pingDuration)), noNoise
 
     def generateSamples(self, size=None):
         if size is None:
@@ -73,7 +75,7 @@ class SampleGenerator:
             results.append(self.generateSample())
 
         # Output
-        return [result[0] for result in results], [result[1] for result in results], [result[2] for result in results]
+        return [result[0] for result in results], [result[1] for result in results], [result[2] for result in results], [result[3] for result in results]
 
 
 class InvalidInputException(Exception):
@@ -85,8 +87,8 @@ class NoSampleFoundException(Exception):
 class PingerLocator:
 
     # Given Constants
-    SAMPLING_FREQUENCY = 512000  # Sampling Frequency in Hz
-    PINGER_DURATION = 0.001      # Duration of the ping in seconds
+    SAMPLING_FREQUENCY = 100000  # Sampling Frequency in Hz
+    PINGER_DURATION = 0.004      # Duration of the ping in seconds
     VALID_FREQUENCIES = range(25000, 41000, 1000)
     SAMPLE_SIZE = 2              # Size of the expected sample in seconds
     SPEED_OF_SOUND = 1531        # The speed of sound in whatever medium this code is being run for, in meters/second
@@ -286,7 +288,7 @@ class PingerLocator:
         # Return the angle of the oncoming signal
         return np.arccos(signal_angle_cos), broken
 
-    def calc_heading(self, center_microphone_data, x_microphone_data, y_microphone_data):
+    def calc_heading(self, center_microphone_data, x_microphone_data, y_microphone_data, dummy_data):
         """Calculates the heading of an incoming signal from 3 microphones in a right triangle
 
         Args:
@@ -300,6 +302,25 @@ class PingerLocator:
 
         # Get the location in the incoming signal of the pulse
         search_indexes = self.get_ping_indexes(center_microphone_data, x_microphone_data, y_microphone_data)
+        # print("Calculated Time Offset:", search_indexes)
+
+        # search_indexes = dummy_data
+
+        # print("Start:", search_indexes[0] - dummy_data[0], "- End:", search_indexes[1] - dummy_data[1])
+
+        """
+        plt.subplot(3, 1, 1)
+        plt.axvline(search_indexes[0], color='red')
+        plt.axvline(search_indexes[1], color='red')
+        plt.plot(range(SampleGenerator.sampleLength), center_microphone_data)
+        plt.subplot(3, 1, 2)
+        plt.plot(range(SampleGenerator.sampleLength), x_microphone_data)
+        plt.subplot(3, 1, 3)
+        plt.plot(range(SampleGenerator.sampleLength), y_microphone_data)
+        plt.suptitle(label[0])
+        plt.show()
+        """
+
 
         # Calculate the phase angle of each of the three signals of the pulse
         center_phase_angle = self.get_phase_angle(center_microphone_data[search_indexes[0]:search_indexes[1]])
@@ -335,35 +356,62 @@ class PingerLocator:
 
         return (signal_heading, broken)
 
+import sys
 
 if __name__ == "__main__":
-    num_samples = 64
+    num_samples = 1024
     generator = SampleGenerator(num_samples)
     startTime = datetime.now()
-    inputs, label, timeOffsets = generator.generateSamples()
+    inputs, label, timeOffsets, noNoise = generator.generateSamples()
     elapsedTime = datetime.now() - startTime
 
     angle_difference = np.zeros(num_samples)
+    calculated_heading = [-1] * num_samples
     sample_broken = [-1] * num_samples
+
+    angle_difference_no_noise = np.zeros(num_samples)
 
     for sample in range(num_samples):
         locator = PingerLocator(25000)
-        calculated_heading, sample_broken[sample] = locator.calc_heading(inputs[sample][0], inputs[sample][2], inputs[sample][1])
+        print("Time Offset:", timeOffsets[sample])
+        calculated_heading[sample], sample_broken[sample] = locator.calc_heading(inputs[sample][0], inputs[sample][2], inputs[sample][1], timeOffsets[sample])
         print("Generated Heading:", label[sample])
-        print("Calculated Heading:", calculated_heading)
-        print("Angle Difference (deg):",np.arccos(np.dot(calculated_heading, label[sample])) * 180/np.pi)
-        angle_difference[sample] = np.arccos(np.dot(calculated_heading, label[sample])) * 180/np.pi
+        print("Calculated Heading:", calculated_heading[sample])
+        print("Angle Difference (deg):",np.arccos(np.dot(calculated_heading[sample], label[sample])) * 180/np.pi)
+        angle_difference[sample] = np.arccos(np.dot(calculated_heading[sample], label[sample])) * 180/np.pi
         print()
 
+    #for sample in range(num_samples):
+    #    locator = PingerLocator(25000)
+    #    calculated_heading_test,_ = locator.calc_heading(noNoise[sample][0], noNoise[sample][2], noNoise[sample][1], timeOffsets[sample])
+    #    angle_difference_no_noise[sample] = np.arccos(np.dot(calculated_heading_test, label[sample])) * 180/np.pi
+
     
-    print("Average Signal Difference: ", np.average(angle_difference))
+    average_difference = np.average(angle_difference)
+    print("Average Signal Difference: ", average_difference)
 
     # Find if any of the outliers were caused by broken samples
     Q3 = np.percentile(angle_difference, 75, interpolation = 'midpoint')
-    for sample in range(num_samples):
-        if angle_difference[sample] > Q3 * 1.5:
-            print("Outlier:", angle_difference[sample], "- Broken:", sample_broken[sample])
+    Q1 = np.percentile(angle_difference, 25, interpolation = 'midpoint')
 
-    plt.boxplot(angle_difference)
+    no_noise_Q3 = np.percentile(angle_difference_no_noise, 75, interpolation = 'midpoint')
+    no_noise_Q1 = np.percentile(angle_difference_no_noise, 25, interpolation = 'midpoint')
+
+    for sample in range(num_samples):
+        if angle_difference[sample] > ((Q3 - Q1) * 1.5 + Q3):
+            print("Sample:", sample, "- Outlier:", angle_difference[sample], "- Broken:", sample_broken[sample], "- Heading:", label[sample], "- Calculated:", calculated_heading[sample])
+        if angle_difference_no_noise[sample] > ((no_noise_Q3 - no_noise_Q1) * 3 + no_noise_Q3):
+            print("Clean Sample:", sample, "- Outlier:", angle_difference_no_noise[sample])
+    
+    #fig, ((ax1, ax2), (ax3, ax4)) = plt.subplots(2, 2)
+    #ax1.boxplot(angle_difference)
+    #ax2.boxplot(angle_difference_no_noise)
+    #ax3.hist(angle_difference)
+    #ax4.hist(angle_difference_no_noise)
+    #plt.show()
+
+    fig, (ax1, ax2) = plt.subplots(1, 2)
+    ax1.boxplot(angle_difference)
+    ax2.hist(angle_difference)
     plt.show()
 
