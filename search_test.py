@@ -2,21 +2,33 @@ import random
 import numpy as np
 import math
 import matplotlib.pyplot as plt
+import scipy.signal
 import time
 from datetime import datetime
 
 # All units are metric. Distance is in meters
 class SampleGenerator:
+    # Sample generation parameters
+    sampleRate = 100000
+    sampleLength = 1024
+
+    # Pulse generation parameters
     micSpacing = 0.012
     speedOfSound = 1531
     maxDistance = 20
-    sampleRate = 100000
-    sampleLength = 2048
     numOfMics = 3
-    pingFrequency = 25000
     pingDuration = 0.004
+
+    # Noise generation parameters
     noiseAmplitude = 2
-    radiansPerSample = pingFrequency / sampleRate * 2 * math.pi
+
+    # Band pass filter parameters
+    lowestFrequency = 20000
+    highestFrequency = 49000
+
+    # Digitization parameters
+    adc_resolution_bits = 16
+    signal_saturation = 0.5
 
     # Position of each microphone in XYZ order
     micPositions = np.array([
@@ -25,7 +37,9 @@ class SampleGenerator:
         [micSpacing, 0, 0]
     ])
 
-    def __init__(self, batchSize=0):
+    def __init__(self, pingFrequency, batchSize=0):
+        self.pingFrequency = pingFrequency
+        self.radiansPerSample = self.pingFrequency / self.sampleRate * 2 * math.pi
         self.batchSize = batchSize
 
     def generateSample(self, *args):
@@ -54,16 +68,29 @@ class SampleGenerator:
                 currentIndex = int(micStart) + i
                 waveforms[micIndex][currentIndex] = math.sin((currentIndex - micStart) * self.radiansPerSample)
 
-        noNoise = waveforms.copy()
-
         # Add noise
         waveforms += np.random.uniform(-self.noiseAmplitude, self.noiseAmplitude, (self.numOfMics,self.sampleLength))
         waveforms /= np.std(waveforms)
 
+        noise = np.zeros((self.numOfMics, self.sampleLength))
+        noise += np.random.uniform(-self.noiseAmplitude, self.noiseAmplitude, (self.numOfMics,self.sampleLength))
+        noise /= np.std(noise)
+
+        sos = scipy.signal.butter(1, (self.lowestFrequency, self.highestFrequency), btype='bandpass', analog=False, output='sos', fs=self.sampleRate)
+        filtered = scipy.signal.sosfilt(sos, waveforms)
+
+        # TODO: Add in noise after amplification
+        digitized = filtered * self.signal_saturation
+        resolution = 2 ** (self.adc_resolution_bits - 1)
+        digitized *= resolution
+        digitized = np.floor(digitized)
+        digitized[digitized > (resolution - 1)] = resolution - 1
+        digitized[digitized < (-resolution)] = -resolution
+
         # Generate label by normalizing vector
         label = origin / np.linalg.norm(origin)
 
-        return waveforms, label, (int(startTime + np.max(timeOffsets)), int(startTime) + int(self.sampleRate * self.pingDuration)), noNoise
+        return digitized, label, (int(startTime + np.max(timeOffsets)), int(startTime) + int(self.sampleRate * self.pingDuration)), waveforms
 
     def generateSamples(self, size=None):
         if size is None:
@@ -359,20 +386,21 @@ class PingerLocator:
 import sys
 
 if __name__ == "__main__":
-    num_samples = 1024
-    generator = SampleGenerator(num_samples)
+    num_samples = 128
+    ping_frequency = 25000
+    generator = SampleGenerator(ping_frequency, num_samples)
     startTime = datetime.now()
-    inputs, label, timeOffsets, noNoise = generator.generateSamples()
+    inputs, label, timeOffsets, cleanSignal = generator.generateSamples()
     elapsedTime = datetime.now() - startTime
 
     angle_difference = np.zeros(num_samples)
     calculated_heading = [-1] * num_samples
     sample_broken = [-1] * num_samples
 
-    angle_difference_no_noise = np.zeros(num_samples)
+    angle_difference_clean = np.zeros(num_samples)
 
     for sample in range(num_samples):
-        locator = PingerLocator(25000)
+        locator = PingerLocator(ping_frequency)
         print("Time Offset:", timeOffsets[sample])
         calculated_heading[sample], sample_broken[sample] = locator.calc_heading(inputs[sample][0], inputs[sample][2], inputs[sample][1], timeOffsets[sample])
         print("Generated Heading:", label[sample])
@@ -381,10 +409,10 @@ if __name__ == "__main__":
         angle_difference[sample] = np.arccos(np.dot(calculated_heading[sample], label[sample])) * 180/np.pi
         print()
 
-    #for sample in range(num_samples):
-    #    locator = PingerLocator(25000)
-    #    calculated_heading_test,_ = locator.calc_heading(noNoise[sample][0], noNoise[sample][2], noNoise[sample][1], timeOffsets[sample])
-    #    angle_difference_no_noise[sample] = np.arccos(np.dot(calculated_heading_test, label[sample])) * 180/np.pi
+    for sample in range(num_samples):
+        locator = PingerLocator(ping_frequency)
+        calculated_heading_test,_ = locator.calc_heading(cleanSignal[sample][0], cleanSignal[sample][2], cleanSignal[sample][1], timeOffsets[sample])
+        angle_difference_clean[sample] = np.arccos(np.dot(calculated_heading_test, label[sample])) * 180/np.pi
 
     
     average_difference = np.average(angle_difference)
@@ -394,24 +422,19 @@ if __name__ == "__main__":
     Q3 = np.percentile(angle_difference, 75, interpolation = 'midpoint')
     Q1 = np.percentile(angle_difference, 25, interpolation = 'midpoint')
 
-    no_noise_Q3 = np.percentile(angle_difference_no_noise, 75, interpolation = 'midpoint')
-    no_noise_Q1 = np.percentile(angle_difference_no_noise, 25, interpolation = 'midpoint')
+    no_noise_Q3 = np.percentile(angle_difference_clean, 75, interpolation = 'midpoint')
+    no_noise_Q1 = np.percentile(angle_difference_clean, 25, interpolation = 'midpoint')
 
     for sample in range(num_samples):
         if angle_difference[sample] > ((Q3 - Q1) * 1.5 + Q3):
             print("Sample:", sample, "- Outlier:", angle_difference[sample], "- Broken:", sample_broken[sample], "- Heading:", label[sample], "- Calculated:", calculated_heading[sample])
-        if angle_difference_no_noise[sample] > ((no_noise_Q3 - no_noise_Q1) * 3 + no_noise_Q3):
-            print("Clean Sample:", sample, "- Outlier:", angle_difference_no_noise[sample])
+        if angle_difference_clean[sample] > ((no_noise_Q3 - no_noise_Q1) * 3 + no_noise_Q3):
+            print("Clean Sample:", sample, "- Outlier:", angle_difference_clean[sample])
     
-    #fig, ((ax1, ax2), (ax3, ax4)) = plt.subplots(2, 2)
-    #ax1.boxplot(angle_difference)
-    #ax2.boxplot(angle_difference_no_noise)
-    #ax3.hist(angle_difference)
-    #ax4.hist(angle_difference_no_noise)
-    #plt.show()
-
-    fig, (ax1, ax2) = plt.subplots(1, 2)
+    fig, ((ax1, ax2), (ax3, ax4)) = plt.subplots(2, 2)
     ax1.boxplot(angle_difference)
-    ax2.hist(angle_difference)
+    ax2.boxplot(angle_difference_clean)
+    ax3.hist(angle_difference)
+    ax4.hist(angle_difference_clean)
     plt.show()
 
