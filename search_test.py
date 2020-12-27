@@ -68,24 +68,26 @@ class SampleGenerator:
                 currentIndex = int(micStart) + i
                 waveforms[micIndex][currentIndex] = math.sin((currentIndex - micStart) * self.radiansPerSample)
 
-        # Add noise
+        # Add noise (This is noise in the environment the microphone picks up)
         waveforms += np.random.uniform(-self.noiseAmplitude, self.noiseAmplitude, (self.numOfMics,self.sampleLength))
         waveforms /= np.std(waveforms)
-
-        noise = np.zeros((self.numOfMics, self.sampleLength))
-        noise += np.random.uniform(-self.noiseAmplitude, self.noiseAmplitude, (self.numOfMics,self.sampleLength))
-        noise /= np.std(noise)
 
         sos = scipy.signal.butter(1, (self.lowestFrequency, self.highestFrequency), btype='bandpass', analog=False, output='sos', fs=self.sampleRate)
         filtered = scipy.signal.sosfilt(sos, waveforms)
 
-        # TODO: Add in noise after amplification
+        # Create a digitized sample that is a small percentage of the total incoming signal
         digitized = filtered * self.signal_saturation
-        resolution = 2 ** (self.adc_resolution_bits - 1)
-        digitized *= resolution
+        resolution = 2 ** self.adc_resolution_bits
+
+        # Multiply the signal to the range of the resolution
+        digitized *= (resolution/2) + (resolution/2)
+
+        # Force the signal into the given resolution
         digitized = np.floor(digitized)
+
+        # Clip the signal if required
         digitized[digitized > (resolution - 1)] = resolution - 1
-        digitized[digitized < (-resolution)] = -resolution
+        digitized[digitized < 0] = 0
 
         # Generate label by normalizing vector
         label = origin / np.linalg.norm(origin)
