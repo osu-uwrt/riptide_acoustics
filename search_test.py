@@ -79,8 +79,9 @@ class SampleGenerator:
         digitized = filtered * self.signal_saturation
         resolution = 2 ** self.adc_resolution_bits
 
-        # Multiply the signal to the range of the resolution
-        digitized *= (resolution/2) + (resolution/2)
+        # Multiply the signal to the range of the resolution and shift it so zero is at resolution/2
+        digitized *= (resolution/2)
+        digitized += (resolution/2)
 
         # Force the signal into the given resolution
         digitized = np.floor(digitized)
