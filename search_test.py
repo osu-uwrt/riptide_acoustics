@@ -292,7 +292,7 @@ class PingerLocator:
         return (start_index, end_index)
 
 
-    def get_signal_angle(self, phase_angle_1, phase_angle_2):
+    def get_signal_phase_difference(self, phase_angle_1, phase_angle_2):
         """Gets the angle of the incoming signal from the first microphone
 
         Args:
@@ -304,7 +304,6 @@ class PingerLocator:
         """
 
         phase_difference = phase_angle_2 - phase_angle_1
-        wavelength = self.SPEED_OF_SOUND / self.target_frequency
 
         # Wrap around subtraction into valid range for angle calculations
         if phase_difference < -1*np.pi:
@@ -312,24 +311,11 @@ class PingerLocator:
         elif phase_difference > np.pi:
             phase_difference = phase_difference - 2*np.pi
 
-        # Calculate the angle of the incoming wave based on p hase shift
-        signal_angle_cos = (wavelength * phase_difference) / (2 * np.pi * self.MICROPHONE_DISTANCE)
-        
-        # Fix the cos of the angle if it is outside of the domain of arccos
-        # TODO: Find the error causing the phase difference to be too large for the input
-        broken = 0
-        if signal_angle_cos > 1:
-            signal_angle_cos = 1
-            broken = 1
-        elif signal_angle_cos < -1:
-            signal_angle_cos = -1
-            broken = 1
-
         # Return the angle of the oncoming signal
-        return np.arccos(signal_angle_cos), phase_difference, broken
+        return phase_difference
 
-    def calc_heading(self, center_microphone_data, x_microphone_data, y_microphone_data, dummy_data):
-        """Calculates the heading of an incoming signal from 3 microphones in a right triangle
+    def calc_phase_differences(self, center_microphone_data, x_microphone_data, y_microphone_data):
+        """Calculates the phase differences of an incoming signal from 3 microphones in a right triangle
 
         Args:
             center_microphone_data: A numpy array with the samples from the center microphone
@@ -337,7 +323,7 @@ class PingerLocator:
             y_microphone_data: A numpy array with the samples from the microphone at an y offset of the center
 
         Returns:
-            A tuple with three elements for the normalized x, y, and z heading
+            A tuple with the x and y signal phase differences
         """
 
         # Get the location in the incoming signal of the pulse
@@ -349,82 +335,20 @@ class PingerLocator:
         y_phase_angle = self.get_phase_angle(y_microphone_data[search_indexes[0]:search_indexes[1]])
 
         # Calculate the x and y angles of the heading
-        x_signal_angle, x_phase_difference, broken1 = self.get_signal_angle(center_phase_angle, x_phase_angle)
-        y_signal_angle, y_phase_difference, broken2 = self.get_signal_angle(center_phase_angle, y_phase_angle)
-        broken = broken1 + broken2
+        x_phase_difference = self.get_signal_phase_difference(center_phase_angle, x_phase_angle)
+        y_phase_difference = self.get_signal_phase_difference(center_phase_angle, y_phase_angle)
 
-        average_phase_difference = np.sqrt(x_phase_difference**2 + y_phase_difference**2)
+        return (x_phase_difference, y_phase_difference)
 
-        # Calculate the three components of the heading as a unit vector
-        signal_x_component = np.cos(x_signal_angle)
-        signal_y_component = np.cos(y_signal_angle)
-        azimuth_angle = np.arctan2(signal_y_component, signal_x_component)
-
-        wavelength = self.SPEED_OF_SOUND / self.target_frequency
-        altitude_angle = -np.arccos(average_phase_difference / (2 * np.pi * self.MICROPHONE_DISTANCE / wavelength))
-        if np.isnan(altitude_angle):
-            altitude_angle = 0
-
-        signal_x_component = np.cos(azimuth_angle)
-        signal_y_component = np.sin(azimuth_angle)
-        signal_z_component = np.tan(altitude_angle)
-
-        # Create a heading vector with the individual components
-        signal_heading = np.array([signal_x_component, signal_y_component, signal_z_component])
-        signal_heading /= np.linalg.norm(signal_heading)
-
-        assert np.linalg.norm(signal_heading) > 0.999 and np.linalg.norm(signal_heading) < 1.001
-
-        return (signal_heading, broken)
-
-def generate_samples():
-    num_samples = 1024
+def generate_samples(num_samples=1024):
     generator = SampleGenerator(num_samples)
     inputs, label, ping_frequency, mic_spacing = generator.generateSamples()
 
-    angle_difference = np.zeros(num_samples)
-    calculated_heading = [-1] * num_samples
-    sample_broken = [-1] * num_samples
+    sample_data = []
 
     for sample in range(num_samples):
         locator = PingerLocator(ping_frequency[sample], mic_spacing[sample])
-        calculated_heading[sample], sample_broken[sample] = locator.calc_heading(inputs[sample][0], inputs[sample][2], inputs[sample][1], label[sample])
-        print("Generated Heading:", label[sample])
-        print("Calculated Heading:", calculated_heading[sample])
-        angle_difference[sample] = np.arccos(np.dot(calculated_heading[sample], label[sample])) * 180/np.pi
-        print("Angle Difference (deg):", angle_difference[sample], "- Broken:", sample_broken[sample])
-        print()
-
-    average_difference = np.average(angle_difference)
-    print("Average Signal Difference: ", average_difference)
-
-    max_difference = np.max(angle_difference)
-    print("Max Angle Difference:", max_difference)
-
-    anglefig = plt.figure()
-    angleax = anglefig.subplots()
-    angleax.set_title("Filtered Angle Difference")
-    angleax.set_xlabel("Angle of Elevation of Oncoming Ping (deg)")
-    angleax.set_ylabel("Angle Difference (deg)")
+        x_phase_difference, y_phase_difference = locator.calc_phase_differences(inputs[sample][0], inputs[sample][2], inputs[sample][1])
+        sample_data.append({"mic_spacing": mic_spacing[sample], "ping_frequency": ping_frequency[sample], "ping_direction": label[sample], "x_phase_difference": x_phase_difference, "y_phase_difference": y_phase_difference})
     
-    colors = np.zeros((num_samples, 3))
-    for sample in range(num_samples):
-        my_color = mpl.colors.hsv_to_rgb(((max_difference - angle_difference[sample])/max_difference * 0.6667, 1, 1))
-        colors[sample] = my_color
-
-    elevation_angles = np.zeros(num_samples)
-    for sample in range(num_samples):
-        vector_height = label[sample][2] * -1  # Invert since it simulates downward
-        vector_xy_length = np.sqrt(label[sample][0]**2 + label[sample][1]**2)
-        elevation_angles[sample] = (180.0/np.pi) * np.arctan(vector_height/vector_xy_length)
-
-    angleax.scatter(elevation_angles, angle_difference, c=colors)
-
-
-    fig, (ax1, ax2) = plt.subplots(2)
-    ax1.boxplot(angle_difference)
-    ax2.hist(angle_difference)
-    plt.show()
-
-if __name__ == "__main__":
-    generate_samples()
+    return sample_data
