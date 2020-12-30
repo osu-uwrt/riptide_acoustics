@@ -10,8 +10,8 @@ from datetime import datetime
 # All units are metric. Distance is in meters
 class SampleGenerator:
     # Sample generation parameters
-    sampleRate = 750000
-    sampleLength = 4096
+    sampleRate = 100000
+    sampleLength = 1024
 
     # Pulse generation parameters
     micSpacing = 0.012
@@ -21,7 +21,7 @@ class SampleGenerator:
     pingDuration = 0.004
 
     # Noise generation parameters
-    noiseAmplitude = 2
+    noiseAmplitude = 1
 
     # Band pass filter parameters
     lowestFrequency = 20000
@@ -118,7 +118,7 @@ class NoSampleFoundException(Exception):
 class PingerLocator:
 
     # Given Constants
-    SAMPLING_FREQUENCY = 750000  # Sampling Frequency in Hz
+    SAMPLING_FREQUENCY = 100000  # Sampling Frequency in Hz
     PINGER_DURATION = 0.004      # Duration of the ping in seconds
     VALID_FREQUENCIES = range(25000, 41000, 1000)
     SAMPLE_SIZE = 2              # Size of the expected sample in seconds
@@ -401,8 +401,6 @@ if __name__ == "__main__":
     calculated_heading = [-1] * num_samples
     sample_broken = [-1] * num_samples
 
-    angle_difference_clean = np.zeros(num_samples)
-
     for sample in range(num_samples):
         locator = PingerLocator(ping_frequency)
         print("Time Offset:", timeOffsets[sample])
@@ -450,6 +448,9 @@ if __name__ == "__main__":
     max_difference = np.max(angle_difference)
     print("Max Angle Difference:", max_difference)
 
+    num_valid_samples = num_samples - np.sum([this_broken != 0 for this_broken in sample_broken])
+    print("Num Broken Samples:", num_samples - num_valid_samples)
+
     vectorfig = plt.figure()
     ax = vectorfig.gca(projection='3d', title="Ping Angle with Length as Angle Difference")
     x, y, z, u, v, w = np.zeros((6, num_samples))
@@ -470,21 +471,46 @@ if __name__ == "__main__":
     ax.zaxis.v_interval = (0, max_axis)
 
 
-    anglefig = plt.figure()
-    angleax = anglefig.subplots()
-    angleax.set_title("Angle Difference With Respect To Vector Elevation Angle")
+    anglefig, (angleax, origax) = plt.subplots(2)
+    angleax.set_title("Filtered Angle Difference")
     angleax.set_xlabel("Angle of Elevation of Oncoming Ping (deg)")
     angleax.set_ylabel("Angle Difference (deg)")
     
     elevation_angles = np.zeros(num_samples)
+    filtered_angles = np.zeros(num_valid_samples)
+    filtered_differences = np.zeros(num_valid_samples)
+    filtered_colors = np.zeros((num_valid_samples, 3))
+    valid_count = 0
     for sample in range(num_samples):
         vector_height = label[sample][2] * -1  # Invert since it simulates downward
         vector_xy_length = np.sqrt(label[sample][0]**2 + label[sample][1]**2)
         elevation_angles[sample] = (180.0/np.pi) * np.arctan(vector_height/vector_xy_length)
+        if sample_broken[sample] == 0:
+            filtered_angles[valid_count] = elevation_angles[sample]
+            filtered_differences[valid_count] = angle_difference[sample]
+            filtered_colors[valid_count] = colors[sample]
+            valid_count += 1
+        else:
+            colors[sample] = mpl.colors.hsv_to_rgb((0.8, 1, 0.5 + 0.5 * (sample_broken[sample] - 4)))
 
         #elevation_angles[sample] = (180.0/np.pi) * np.arctan(label[sample][1] / label[sample][0])
 
-    angleax.scatter(elevation_angles, angle_difference, c=colors[:num_samples])
+    angleax.scatter(filtered_angles, filtered_differences, c=filtered_colors)
+
+    origax.set_title("Unfiltered Angle Difference")
+    origax.set_xlabel("Angle of Elevation of Oncoming Ping (deg)")
+    origax.set_ylabel("Angle Difference (deg)")
+
+    origax.scatter(elevation_angles, angle_difference, c=colors[:num_samples])
+
+    print("Filtered Average Angle Difference: ", np.average(filtered_differences))
+
+    fig, ((ax1, ax2), (ax3, ax4)) = plt.subplots(2, 2)
+    ax1.boxplot(angle_difference)
+    ax2.boxplot(filtered_differences)
+    ax3.hist(angle_difference)
+    ax4.hist(filtered_differences)
+    plt.show()
 
     plt.show()
 
