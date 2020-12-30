@@ -1,6 +1,7 @@
 import random
 import numpy as np
 import math
+import matplotlib as mpl
 import matplotlib.pyplot as plt
 import scipy.signal
 import time
@@ -9,8 +10,8 @@ from datetime import datetime
 # All units are metric. Distance is in meters
 class SampleGenerator:
     # Sample generation parameters
-    sampleRate = 100000
-    sampleLength = 1024
+    sampleRate = 750000
+    sampleLength = 4096
 
     # Pulse generation parameters
     micSpacing = 0.012
@@ -117,7 +118,7 @@ class NoSampleFoundException(Exception):
 class PingerLocator:
 
     # Given Constants
-    SAMPLING_FREQUENCY = 100000  # Sampling Frequency in Hz
+    SAMPLING_FREQUENCY = 750000  # Sampling Frequency in Hz
     PINGER_DURATION = 0.004      # Duration of the ping in seconds
     VALID_FREQUENCIES = range(25000, 41000, 1000)
     SAMPLE_SIZE = 2              # Size of the expected sample in seconds
@@ -389,7 +390,7 @@ class PingerLocator:
 import sys
 
 if __name__ == "__main__":
-    num_samples = 128
+    num_samples = 1024
     ping_frequency = 25000
     generator = SampleGenerator(ping_frequency, num_samples)
     startTime = datetime.now()
@@ -412,6 +413,7 @@ if __name__ == "__main__":
         angle_difference[sample] = np.arccos(np.dot(calculated_heading[sample], label[sample])) * 180/np.pi
         print()
 
+    """
     for sample in range(num_samples):
         locator = PingerLocator(ping_frequency)
         calculated_heading_test,_ = locator.calc_heading(cleanSignal[sample][0], cleanSignal[sample][2], cleanSignal[sample][1], timeOffsets[sample])
@@ -439,5 +441,50 @@ if __name__ == "__main__":
     ax2.boxplot(angle_difference_clean)
     ax3.hist(angle_difference)
     ax4.hist(angle_difference_clean)
+    plt.show()
+    """
+
+    average_difference = np.average(angle_difference)
+    print("Average Signal Difference: ", average_difference)
+
+    max_difference = np.max(angle_difference)
+    print("Max Angle Difference:", max_difference)
+
+    vectorfig = plt.figure()
+    ax = vectorfig.gca(projection='3d', title="Ping Angle with Length as Angle Difference")
+    x, y, z, u, v, w = np.zeros((6, num_samples))
+    colors = np.zeros((num_samples*3, 3))
+    for sample in range(num_samples):
+        u[sample], v[sample], w[sample] = label[sample] * angle_difference[sample]
+        my_color = mpl.colors.hsv_to_rgb(((max_difference - angle_difference[sample])/max_difference * 0.6667, 1, 1))
+        colors[sample] = my_color
+        colors[2*sample+num_samples] = my_color
+        colors[1+2*sample+num_samples] = my_color
+    w *= -1  # Invert the z axis since the simulation runs with the assumption that it is pointing downwards
+
+    ax.quiver(x, y, z, u, v, w, arrow_length_ratio=0.1, colors=colors)
+
+    max_axis = np.max((np.max(np.abs(u)), np.max(np.abs(v)), np.max(np.abs(w))))
+    ax.xaxis.v_interval = (-max_axis, max_axis)
+    ax.yaxis.v_interval = (-max_axis, max_axis)
+    ax.zaxis.v_interval = (0, max_axis)
+
+
+    anglefig = plt.figure()
+    angleax = anglefig.subplots()
+    angleax.set_title("Angle Difference With Respect To Vector Elevation Angle")
+    angleax.set_xlabel("Angle of Elevation of Oncoming Ping (deg)")
+    angleax.set_ylabel("Angle Difference (deg)")
+    
+    elevation_angles = np.zeros(num_samples)
+    for sample in range(num_samples):
+        vector_height = label[sample][2] * -1  # Invert since it simulates downward
+        vector_xy_length = np.sqrt(label[sample][0]**2 + label[sample][1]**2)
+        elevation_angles[sample] = (180.0/np.pi) * np.arctan(vector_height/vector_xy_length)
+
+        #elevation_angles[sample] = (180.0/np.pi) * np.arctan(label[sample][1] / label[sample][0])
+
+    angleax.scatter(elevation_angles, angle_difference, c=colors[:num_samples])
+
     plt.show()
 
