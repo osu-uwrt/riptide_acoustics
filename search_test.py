@@ -317,7 +317,7 @@ class PingerLocator:
             broken = 1
 
         # Return the angle of the oncoming signal
-        return np.arccos(signal_angle_cos), broken
+        return np.arccos(signal_angle_cos), phase_difference, broken
 
     def calc_heading(self, center_microphone_data, x_microphone_data, y_microphone_data, dummy_data):
         """Calculates the heading of an incoming signal from 3 microphones in a right triangle
@@ -359,16 +359,32 @@ class PingerLocator:
         y_phase_angle = self.get_phase_angle(y_microphone_data[search_indexes[0]:search_indexes[1]])
 
         # Calculate the x and y angles of the heading
-        x_signal_angle, broken1 = self.get_signal_angle(center_phase_angle, x_phase_angle)
-        y_signal_angle, broken2 = self.get_signal_angle(center_phase_angle, y_phase_angle)
+        x_signal_angle, x_phase_difference, broken1 = self.get_signal_angle(center_phase_angle, x_phase_angle)
+        y_signal_angle, y_phase_difference, broken2 = self.get_signal_angle(center_phase_angle, y_phase_angle)
 
         broken = broken1 + broken2
+
+        average_phase_difference = np.sqrt(x_phase_difference**2 + y_phase_difference**2)
 
         # Calculate the three components of the heading as a unit vector
         signal_x_component = np.cos(x_signal_angle)
         signal_y_component = np.cos(y_signal_angle)
-        signal_z_component = -np.sqrt(1 - np.power(signal_x_component, 2) - np.power(signal_y_component, 2))
+        azimuth_angle = np.arctan2(signal_y_component, signal_x_component)
 
+        wavelength = self.SPEED_OF_SOUND / self.target_frequency
+        altitude_angle = -np.arccos(average_phase_difference / (2 * np.pi * self.MICROPHONE_DISTANCE / wavelength))
+        if np.isnan(altitude_angle):
+            altitude_angle = 0
+        #signal_z_component = -np.sqrt(1 - np.power(signal_x_component, 2) - np.power(signal_y_component, 2))
+
+        signal_x_component = np.cos(azimuth_angle)
+        signal_y_component = np.sin(azimuth_angle)
+        signal_z_component = np.tan(altitude_angle)
+
+        real_altitude_angle = np.arctan(dummy_data[2] / np.sqrt(dummy_data[0]**2 + dummy_data[1]**2))
+        real_phase_difference = np.cos(-real_altitude_angle) * 2 * np.pi * self.MICROPHONE_DISTANCE / wavelength
+
+        """
         # Fix for the signal going outside of the expected bounds
         # TODO: Find the error causing the x and y to have a magnitude > 1
         if np.isnan(signal_z_component):
@@ -379,9 +395,11 @@ class PingerLocator:
             magnitude = np.linalg.norm(np.array([signal_x_component, signal_y_component]))
             signal_x_component = signal_x_component / magnitude
             signal_y_component = signal_y_component / magnitude
+        """
 
         # Create a heading vector with the individual components
         signal_heading = np.array([signal_x_component, signal_y_component, signal_z_component])
+        signal_heading /= np.linalg.norm(signal_heading)
 
         assert np.linalg.norm(signal_heading) > 0.999 and np.linalg.norm(signal_heading) < 1.001
 
@@ -404,11 +422,14 @@ if __name__ == "__main__":
     for sample in range(num_samples):
         locator = PingerLocator(ping_frequency)
         print("Time Offset:", timeOffsets[sample])
-        calculated_heading[sample], sample_broken[sample] = locator.calc_heading(inputs[sample][0], inputs[sample][2], inputs[sample][1], timeOffsets[sample])
+        calculated_heading[sample], sample_broken[sample] = locator.calc_heading(inputs[sample][0], inputs[sample][2], inputs[sample][1], label[sample])
         print("Generated Heading:", label[sample])
         print("Calculated Heading:", calculated_heading[sample])
-        print("Angle Difference (deg):",np.arccos(np.dot(calculated_heading[sample], label[sample])) * 180/np.pi)
+        #projected_label = label[sample].copy()
+        #projected_label[2] = 0
         angle_difference[sample] = np.arccos(np.dot(calculated_heading[sample], label[sample])) * 180/np.pi
+        #print("Projected Heading:", projected_label)
+        print("Angle Difference (deg):", angle_difference[sample], "- Broken:", sample_broken[sample])
         print()
 
     """
@@ -490,8 +511,8 @@ if __name__ == "__main__":
             filtered_differences[valid_count] = angle_difference[sample]
             filtered_colors[valid_count] = colors[sample]
             valid_count += 1
-        else:
-            colors[sample] = mpl.colors.hsv_to_rgb((0.8, 1, 0.5 + 0.5 * (sample_broken[sample] - 4)))
+        #else:
+        #    colors[sample] = mpl.colors.hsv_to_rgb((0.8, 1, 0.5 + 0.5 * (sample_broken[sample] - 4)))
 
         #elevation_angles[sample] = (180.0/np.pi) * np.arctan(label[sample][1] / label[sample][0])
 
