@@ -14,7 +14,7 @@ generator = PingGenerator()
 ##################################################################
 # This file is used to train a trainable model
 # Enter the name of the model here
-model = WideTwoLayerModel(generator.get_num_inputs())
+model = DeepModel(generator.get_num_inputs())
 ##################################################################
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")

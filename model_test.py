@@ -4,8 +4,24 @@ import math
 import matplotlib as mpl
 import matplotlib.pyplot as plt
 import scipy.signal
-import time
+import torch
 from datetime import datetime
+
+# Prepare our model
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+##################################################################
+# This file is used to test a model against a set of samples
+# Enter the name of the model here
+from ML.models.deep import DeepModel
+model = DeepModel(4)
+model.load()
+model = model.to(device)
+##################################################################
+
+model_name = "ML"
+num_samples = 1024
+ping_frequency = 25000
 
 # All units are metric. Distance is in meters
 class SampleGenerator:
@@ -14,6 +30,7 @@ class SampleGenerator:
     sampleLength = 1024
 
     # Pulse generation parameters
+    micSpacing = 0.012
     speedOfSound = 1531
     maxDistance = 20
     numOfMics = 3
@@ -30,28 +47,19 @@ class SampleGenerator:
     adc_resolution_bits = 16
     signal_saturation = 0.5
 
-    minFrequency = 25000
-    maxFrequency = 40000
-    minMicSpacing = 0.01
-    maxMicSpacing = 0.017
-
     # Position of each microphone in XYZ order
+    micPositions = np.array([
+        [0, 0, 0],
+        [0, micSpacing, 0],
+        [micSpacing, 0, 0]
+    ])
 
-    def __init__(self, batchSize=0):
+    def __init__(self, pingFrequency, batchSize=0):
+        self.pingFrequency = pingFrequency
+        self.radiansPerSample = self.pingFrequency / self.sampleRate * 2 * math.pi
         self.batchSize = batchSize
 
     def generateSample(self, *args):
-        pingFrequency = random.uniform(self.minFrequency, self.maxFrequency)
-        micSpacing = random.uniform(self.minMicSpacing, self.maxMicSpacing)
-        
-        micPositions = np.array([
-            [0, 0, 0],
-            [0, micSpacing, 0],
-            [micSpacing, 0, 0]
-        ])
-
-        radiansPerSample = pingFrequency / self.sampleRate * 2 * math.pi
-
         # Generate origin of the sound
         origin = np.array([
             random.uniform(-self.maxDistance, self.maxDistance),
@@ -62,7 +70,7 @@ class SampleGenerator:
         # Compute distance to each microphone
         distances = np.zeros(self.numOfMics)
         for i in range(self.numOfMics):
-            distances[i] = np.linalg.norm(micPositions[i] - origin)
+            distances[i] = np.linalg.norm(self.micPositions[i] - origin)
 
         # Compute time offsets in samples caused by distance differences
         timeOffsets = (distances - np.min(distances)) / self.speedOfSound * self.sampleRate
@@ -75,13 +83,12 @@ class SampleGenerator:
             #print("Mic",micIndex,"start index:",int(micStart))
             for i in range(int(self.sampleRate * self.pingDuration)):
                 currentIndex = int(micStart) + i
-                waveforms[micIndex][currentIndex] = math.sin((currentIndex - micStart) * radiansPerSample)
+                waveforms[micIndex][currentIndex] = math.sin((currentIndex - micStart) * self.radiansPerSample)
 
         # Add noise (This is noise in the environment the microphone picks up)
         waveforms += np.random.uniform(-self.noiseAmplitude, self.noiseAmplitude, (self.numOfMics,self.sampleLength))
         waveforms /= np.std(waveforms)
 
-        """
         sos = scipy.signal.butter(1, (self.lowestFrequency, self.highestFrequency), btype='bandpass', analog=False, output='sos', fs=self.sampleRate)
         filtered = scipy.signal.sosfilt(sos, waveforms)
 
@@ -99,12 +106,11 @@ class SampleGenerator:
         # Clip the signal if required
         digitized[digitized > (resolution - 1)] = resolution - 1
         digitized[digitized < 0] = 0
-        """
 
         # Generate label by normalizing vector
         label = origin / np.linalg.norm(origin)
 
-        return waveforms, label, pingFrequency, micSpacing
+        return digitized, label, (int(startTime + np.max(timeOffsets)), int(startTime) + int(self.sampleRate * self.pingDuration)), waveforms
 
     def generateSamples(self, size=None):
         if size is None:
@@ -140,14 +146,14 @@ class PingerLocator:
     SEGMENT_SEARCH_SIZE = 0.005  # Size in seconds to do the first search with
     SEARCH_THRESHOLD = 1.5       # The minimum percent difference (expressed as a decimal) for a maximum value to contain a signal
 
-    def __init__(self, target_frequency, microphone_spacing):
-        #if target_frequency not in self.VALID_FREQUENCIES:
-        #    raise InvalidInputException("Invalid Input Frequency")
-
-        self.MICROPHONE_DISTANCE = microphone_spacing
+    def __init__(self, target_frequency, model):
+        if target_frequency not in self.VALID_FREQUENCIES:
+            raise InvalidInputException("Invalid Input Frequency")
 
         # Setup the class variables
         self.target_frequency = target_frequency
+
+        self.model = model
 
         # Do checks on the presets to make sure that the code will work with those presets
         if not (self.SAMPLE_SIZE / self.SEGMENT_SEARCH_SIZE).is_integer():
@@ -295,7 +301,7 @@ class PingerLocator:
         return (start_index, end_index)
 
 
-    def get_signal_phase_difference(self, phase_angle_1, phase_angle_2):
+    def get_phase_difference(self, phase_angle_1, phase_angle_2):
         """Gets the angle of the incoming signal from the first microphone
 
         Args:
@@ -307,6 +313,7 @@ class PingerLocator:
         """
 
         phase_difference = phase_angle_2 - phase_angle_1
+        wavelength = self.SPEED_OF_SOUND / self.target_frequency
 
         # Wrap around subtraction into valid range for angle calculations
         if phase_difference < -1*np.pi:
@@ -317,8 +324,8 @@ class PingerLocator:
         # Return the angle of the oncoming signal
         return phase_difference
 
-    def calc_phase_differences(self, center_microphone_data, x_microphone_data, y_microphone_data):
-        """Calculates the phase differences of an incoming signal from 3 microphones in a right triangle
+    def calc_heading(self, center_microphone_data, x_microphone_data, y_microphone_data):
+        """Calculates the heading of an incoming signal from 3 microphones in a right triangle
 
         Args:
             center_microphone_data: A numpy array with the samples from the center microphone
@@ -326,7 +333,7 @@ class PingerLocator:
             y_microphone_data: A numpy array with the samples from the microphone at an y offset of the center
 
         Returns:
-            A tuple with the x and y signal phase differences
+            A tuple with three elements for the normalized x, y, and z heading
         """
 
         # Get the location in the incoming signal of the pulse
@@ -338,20 +345,99 @@ class PingerLocator:
         y_phase_angle = self.get_phase_angle(y_microphone_data[search_indexes[0]:search_indexes[1]])
 
         # Calculate the x and y angles of the heading
-        x_phase_difference = self.get_signal_phase_difference(center_phase_angle, x_phase_angle)
-        y_phase_difference = self.get_signal_phase_difference(center_phase_angle, y_phase_angle)
+        x_phase_difference = self.get_phase_difference(center_phase_angle, x_phase_angle)
+        y_phase_difference = self.get_phase_difference(center_phase_angle, y_phase_angle)
 
-        return (x_phase_difference, y_phase_difference)
+        model_input = np.array([self.MICROPHONE_DISTANCE * 100, self.target_frequency/10000, x_phase_difference, y_phase_difference])
+        predicted = self.model.evaluate(model_input)
 
-def generate_samples(num_samples=1024):
-    generator = SampleGenerator(num_samples)
-    inputs, label, ping_frequency, mic_spacing = generator.generateSamples()
+        # Create a heading vector with the individual components
+        signal_heading = predicted.copy()
+        signal_heading /= np.linalg.norm(signal_heading)
 
-    sample_data = []
+        assert np.linalg.norm(signal_heading) > 0.999 and np.linalg.norm(signal_heading) < 1.001
+
+        return signal_heading
+
+if __name__ == "__main__":
+    generator = SampleGenerator(ping_frequency, num_samples)
+    startTime = datetime.now()
+    inputs, label, timeOffsets, cleanSignal = generator.generateSamples()
+    elapsedTime = datetime.now() - startTime
+
+    angle_difference = np.zeros(num_samples)
+    calculated_heading = [-1] * num_samples
 
     for sample in range(num_samples):
-        locator = PingerLocator(ping_frequency[sample], mic_spacing[sample])
-        x_phase_difference, y_phase_difference = locator.calc_phase_differences(inputs[sample][0], inputs[sample][2], inputs[sample][1])
-        sample_data.append({"mic_spacing": mic_spacing[sample], "ping_frequency": ping_frequency[sample], "ping_direction": label[sample], "x_phase_difference": x_phase_difference, "y_phase_difference": y_phase_difference})
+        locator = PingerLocator(ping_frequency, model)
+        calculated_heading[sample] = locator.calc_heading(inputs[sample][0], inputs[sample][2], inputs[sample][1])
+        print("Time Offset:", timeOffsets[sample])
+        print("Generated Heading:", label[sample])
+        print("Calculated Heading:", calculated_heading[sample])
+        angle_difference[sample] = np.arccos(np.dot(calculated_heading[sample], label[sample])) * 180/np.pi
+        print("Angle Difference (deg):", angle_difference[sample])
+        print()
+
+    average_difference = np.average(angle_difference)
+    print("Average Signal Difference: ", average_difference)
+
+    print("Median Angle Difference:", np.median(angle_difference))
+
+    max_difference = np.max(angle_difference)
+    print("Max Angle Difference:", max_difference)
+
+    vectorfig = plt.figure()
+    vectorfig.canvas.set_window_title(model_name + ' Vector Plot')
+    vectorax = vectorfig.gca(projection='3d', title="Ping Angle with Length as Angle Difference")
+    x, y, z, u, v, w = np.zeros((6, num_samples))
+    colors = np.zeros((num_samples*3, 3))
+    for sample in range(num_samples):
+        u[sample], v[sample], w[sample] = label[sample] * angle_difference[sample]
+        my_color = mpl.colors.hsv_to_rgb(((max_difference - angle_difference[sample])/max_difference * 0.6667, 1, 1))
+        colors[sample] = my_color
+        colors[2*sample+num_samples] = my_color
+        colors[1+2*sample+num_samples] = my_color
+    w *= -1  # Invert the z axis since the simulation runs with the assumption that it is pointing downwards
+
+    vectorax.quiver(x, y, z, u, v, w, arrow_length_ratio=0.1, colors=colors)
+
+    max_axis = np.max((np.max(np.abs(u)), np.max(np.abs(v)), np.max(np.abs(w))))
+    vectorax.set_xlim(-max_axis, max_axis)
+    vectorax.set_ylim(-max_axis, max_axis)
+    vectorax.set_zlim(0, max_axis)
+    vectorax.set_xlabel('X Axis')
+    vectorax.set_ylabel('Y Axis')
+    vectorax.set_zlabel('Z Axis (Inverted)')
+
+
+    scatterfig, (elevationax, azimuthax) = plt.subplots(2)
+    scatterfig.canvas.set_window_title(model_name + ' Scatter Plots')
+    elevationax.set_title("Elevation Angle Difference")
+    elevationax.set_xlabel("Angle of Elevation of Oncoming Ping (deg)")
+    elevationax.set_ylabel("Angle Difference (deg)")
+    azimuthax.set_title("Aximuth Angle Difference")
+    azimuthax.set_xlabel("Angle of Azimuth of Oncoming Ping (deg)")
+    azimuthax.set_ylabel("Angle Difference (deg)")
     
-    return sample_data
+    elevation_angles = np.zeros(num_samples)
+    azimuth_angles = np.zeros(num_samples)
+    for sample in range(num_samples):
+        vector_height = label[sample][2] * -1  # Invert since it simulates downward
+        vector_xy_length = np.sqrt(label[sample][0]**2 + label[sample][1]**2)
+        elevation_angles[sample] = (180.0/np.pi) * np.arctan(vector_height/vector_xy_length)
+        azimuth_angles[sample] = (180.0/np.pi) * np.arctan2(label[sample][1], label[sample][0])
+        if azimuth_angles[sample] < 0:
+            azimuth_angles[sample] += 360
+
+    elevationax.scatter(elevation_angles, angle_difference, c=colors[:num_samples])
+    azimuthax.scatter(azimuth_angles, angle_difference, c=colors[:num_samples])
+
+    distfig, (ax1, ax2) = plt.subplots(1, 2)
+    distfig.canvas.set_window_title(model_name + ' Distribution Plots')
+    ax1.boxplot(angle_difference)
+    ax1.set_ylabel("Angle Difference (deg)")
+    ax2.hist(angle_difference)
+    ax2.set_xlabel("Angle Difference (deg)")
+    ax2.set_ylabel("Num Samples")
+    plt.show()
+

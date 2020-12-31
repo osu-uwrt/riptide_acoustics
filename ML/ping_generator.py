@@ -21,9 +21,8 @@ class PingGenerator:
         truths = []
         sample_data = search_test.generate_samples(size)
         for sample in sample_data:
-
-            inputs.append(np.array([sample["mic_spacing"], sample["ping_frequency"], sample["x_phase_difference"], sample["y_phase_difference"]]))
-            truths.append(np.array(sample["ping_direction"]))
+            inputs.append(np.array([sample["mic_spacing"] * 100, sample["ping_frequency"]/10000, sample["x_phase_difference"], sample["y_phase_difference"]]))
+            truths.append(sample["ping_direction"])
 
         return inputs, truths
 

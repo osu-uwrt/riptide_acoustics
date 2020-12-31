@@ -3,13 +3,14 @@ sys.path.append(".")
 
 from ML.models import *
 from ML.generator import Generator
+from ML.ping_generator import PingGenerator
 import numpy as np
 import matplotlib.pyplot as plt
 import torch
 from ML.types.trainable_model import TrainableModel
 from ML.utils import calculate_error
 
-generator = Generator()
+generator = PingGenerator()
 
 ##################################################################
 # This file is used to test a model against a set of samples
