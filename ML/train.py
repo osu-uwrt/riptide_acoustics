@@ -30,7 +30,7 @@ plt.show()
 
 # Initialize net, optimizer, and loss
 net = model.to(device)
-optimizer = torch.optim.Adam(net.parameters(), lr=0.001)
+optimizer = torch.optim.Adam(net.parameters())
 criterion = torch.nn.MSELoss()
 
 # Initialize our first batch

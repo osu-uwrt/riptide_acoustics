@@ -27,10 +27,11 @@ truth_list = []
 predicted_list = []
 error_list = []
 SAMPLES = 1000 # Number of samples to run
+inputs, truths = generator.generate_samples(size=SAMPLES)
 
 for sample_index in range(SAMPLES):
     # Generate sample
-    input, truth = generator.generate_sample()
+    input, truth = inputs[sample_index], truths[sample_index]
 
     # Run it through the model
     if isinstance(model, TrainableModel):

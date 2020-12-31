@@ -10,24 +10,22 @@ import torch
 # Where an altitude of 0 is on the xy plane and an altitude of -π/2 
 # equals a z of -1
 
+
 class Generator:
-    def generate_sample(self):
-        azimuth = np.random.uniform(0, 2 * math.pi)
-        altitude = np.random.uniform(-math.pi/2, 0)
 
-        x = math.cos(azimuth)*math.cos(altitude)
-        y = math.sin(azimuth)*math.cos(altitude)
-        z = math.sin(altitude)
-
-        return np.array([azimuth, altitude]), np.array([x, y, z])
-
-    def generate_samples(self, size=64):
+    def generate_samples(self, size=64) -> tuple:
         inputs = []
         truths = []
         for _ in range(size):
-            input, truth = self.generate_sample()
-            inputs.append(input)
-            truths.append(truth)
+            azimuth = np.random.uniform(0, 2 * math.pi)
+            altitude = np.random.uniform(-math.pi/2, 0)
+
+            x = math.cos(azimuth)*math.cos(altitude)
+            y = math.sin(azimuth)*math.cos(altitude)
+            z = math.sin(altitude)
+
+            inputs.append(np.array([azimuth, altitude]))
+            truths.append(np.array([x, y, z]))
 
         return inputs, truths
 
