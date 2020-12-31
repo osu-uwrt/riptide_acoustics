@@ -9,10 +9,12 @@ import torch
 from ML.types.trainable_model import TrainableModel
 from ML.utils import calculate_error
 
+generator = Generator()
+
 ##################################################################
 # This file is used to test a model against a set of samples
 # Enter the name of the model here
-model = DeepModel()
+model = DeepModel(generator.get_num_inputs())
 ##################################################################
 
 # Prepare our model
@@ -20,8 +22,6 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 if isinstance(model, TrainableModel):
     model.load()
     model = model.to(device)
-
-generator = Generator()
 
 truth_list = []
 predicted_list = []

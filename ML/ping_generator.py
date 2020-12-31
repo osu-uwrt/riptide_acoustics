@@ -1,6 +1,7 @@
 import numpy as np
 import math
 import torch
+import search_test
 
 # Object that will generate sample data for the conversion of azimuth 
 # and altitude to a unit vector pointing in the correct direction.
@@ -11,24 +12,18 @@ import torch
 # equals a z of -1
 
 
-class Generator:
-
+class PingGenerator:
     def get_num_inputs(self):
-        return 2
+        return 4
 
     def generate_samples(self, size=64) -> tuple:
         inputs = []
         truths = []
-        for _ in range(size):
-            azimuth = np.random.uniform(0, 2 * math.pi)
-            altitude = np.random.uniform(-math.pi/2, 0)
+        sample_data = search_test.generate_samples(size)
+        for sample in sample_data:
 
-            x = math.cos(azimuth)*math.cos(altitude)
-            y = math.sin(azimuth)*math.cos(altitude)
-            z = math.sin(altitude)
-
-            inputs.append(np.array([azimuth, altitude]))
-            truths.append(np.array([x, y, z]))
+            inputs.append(np.array([sample["mic_spacing"], sample["ping_frequency"], sample["x_phase_difference"], sample["y_phase_difference"]]))
+            truths.append(np.array(sample["ping_direction"]))
 
         return inputs, truths
 

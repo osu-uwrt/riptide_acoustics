@@ -30,7 +30,8 @@ class SampleGenerator:
     adc_resolution_bits = 16
     signal_saturation = 0.5
 
-    validFrequencies = range(25000, 41000, 1000)
+    minFrequency = 25000
+    maxFrequency = 40000
     minMicSpacing = 0.01
     maxMicSpacing = 0.017
 
@@ -40,7 +41,7 @@ class SampleGenerator:
         self.batchSize = batchSize
 
     def generateSample(self, *args):
-        pingFrequency = random.choice(self.validFrequencies)
+        pingFrequency = random.uniform(self.minFrequency, self.maxFrequency)
         micSpacing = random.uniform(self.minMicSpacing, self.maxMicSpacing)
         
         micPositions = np.array([
@@ -138,8 +139,8 @@ class PingerLocator:
     SEARCH_THRESHOLD = 1.5       # The minimum percent difference (expressed as a decimal) for a maximum value to contain a signal
 
     def __init__(self, target_frequency, microphone_spacing):
-        if target_frequency not in self.VALID_FREQUENCIES:
-            raise InvalidInputException("Invalid Input Frequency")
+        #if target_frequency not in self.VALID_FREQUENCIES:
+        #    raise InvalidInputException("Invalid Input Frequency")
 
         self.MICROPHONE_DISTANCE = microphone_spacing
 

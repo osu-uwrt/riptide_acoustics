@@ -2,10 +2,10 @@ from torch import nn
 from ML.types.trainable_model import TrainableModel
 
 class DeepModel(TrainableModel):
-    def __init__(self):
+    def __init__(self, num_inputs):
         super(DeepModel, self).__init__("deep")
         self.net = nn.Sequential(
-            nn.Linear(2, 100), nn.LeakyReLU(),
+            nn.Linear(num_inputs, 100), nn.LeakyReLU(),
             nn.Linear(100, 100), nn.LeakyReLU(),
             nn.Linear(100, 100), nn.LeakyReLU(),
             nn.Linear(100, 100), nn.Tanh(),

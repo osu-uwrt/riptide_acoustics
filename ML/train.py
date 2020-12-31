@@ -3,18 +3,20 @@ sys.path.append(".")
 
 from ML.models import *
 from ML.generator import Generator
+from ML.ping_generator import PingGenerator
 from ML.utils import calculate_error
 import numpy as np
 import matplotlib.pyplot as plt
 import torch
 
+generator = PingGenerator()
+
 ##################################################################
 # This file is used to train a trainable model
 # Enter the name of the model here
-model = DeepModel()
+model = WideTwoLayerModel(generator.get_num_inputs())
 ##################################################################
 
-generator = Generator()
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 # Setup plots
