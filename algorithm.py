@@ -1,122 +1,14 @@
-import random
 import numpy as np
-import math
-import matplotlib as mpl
-import matplotlib.pyplot as plt
-import scipy.signal
-import time
-from datetime import datetime
+import torch
 
-# All units are metric. Distance is in meters
-class SampleGenerator:
-    # Sample generation parameters
-    sampleRate = 100000
-    sampleLength = 1024
+from ml import DeepModel
 
-    # Pulse generation parameters
-    speedOfSound = 1531
-    maxDistance = 20
-    numOfMics = 3
-    pingDuration = 0.004
+# Prepare our model
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    # Noise generation parameters
-    noiseAmplitude = 1
-
-    # Band pass filter parameters
-    lowestFrequency = 20000
-    highestFrequency = 49000
-
-    # Digitization parameters
-    adc_resolution_bits = 16
-    signal_saturation = 0.5
-
-    minFrequency = 25000
-    maxFrequency = 40000
-    minMicSpacing = 0.01
-    maxMicSpacing = 0.017
-
-    # Position of each microphone in XYZ order
-
-    def __init__(self, batchSize=0):
-        self.batchSize = batchSize
-
-    def generateSample(self, *args):
-        pingFrequency = random.uniform(self.minFrequency, self.maxFrequency)
-        micSpacing = random.uniform(self.minMicSpacing, self.maxMicSpacing)
-        
-        micPositions = np.array([
-            [0, 0, 0],
-            [0, micSpacing, 0],
-            [micSpacing, 0, 0]
-        ])
-
-        radiansPerSample = pingFrequency / self.sampleRate * 2 * math.pi
-
-        # Generate origin of the sound
-        origin = np.array([
-            random.uniform(-self.maxDistance, self.maxDistance),
-            random.uniform(-self.maxDistance, self.maxDistance),
-            random.uniform(-self.maxDistance, 0),
-        ])
-
-        # Compute distance to each microphone
-        distances = np.zeros(self.numOfMics)
-        for i in range(self.numOfMics):
-            distances[i] = np.linalg.norm(micPositions[i] - origin)
-
-        # Compute time offsets in samples caused by distance differences
-        timeOffsets = (distances - np.min(distances)) / self.speedOfSound * self.sampleRate
-
-        # Apply the ping to each waveform
-        startTime = random.uniform(self.sampleLength * .1, self.sampleLength * .9 - self.pingDuration * self.sampleRate)
-        waveforms = np.zeros((self.numOfMics, self.sampleLength))
-        for micIndex in range(self.numOfMics):
-            micStart = startTime + timeOffsets[micIndex]
-            #print("Mic",micIndex,"start index:",int(micStart))
-            for i in range(int(self.sampleRate * self.pingDuration)):
-                currentIndex = int(micStart) + i
-                waveforms[micIndex][currentIndex] = math.sin((currentIndex - micStart) * radiansPerSample)
-
-        # Add noise (This is noise in the environment the microphone picks up)
-        waveforms += np.random.uniform(-self.noiseAmplitude, self.noiseAmplitude, (self.numOfMics,self.sampleLength))
-        waveforms /= np.std(waveforms)
-
-        """
-        sos = scipy.signal.butter(1, (self.lowestFrequency, self.highestFrequency), btype='bandpass', analog=False, output='sos', fs=self.sampleRate)
-        filtered = scipy.signal.sosfilt(sos, waveforms)
-
-        # Create a digitized sample that is a small percentage of the total incoming signal
-        digitized = filtered * self.signal_saturation
-        resolution = 2 ** self.adc_resolution_bits
-
-        # Multiply the signal to the range of the resolution and shift it so zero is at resolution/2
-        digitized *= (resolution/2)
-        digitized += (resolution/2)
-
-        # Force the signal into the given resolution
-        digitized = np.floor(digitized)
-
-        # Clip the signal if required
-        digitized[digitized > (resolution - 1)] = resolution - 1
-        digitized[digitized < 0] = 0
-        """
-
-        # Generate label by normalizing vector
-        label = origin / np.linalg.norm(origin)
-
-        return waveforms, label, pingFrequency, micSpacing
-
-    def generateSamples(self, size=None):
-        if size is None:
-            size = self.batchSize
-
-        # Process each sample simultaneously
-        results = []
-        for _ in range(size):
-            results.append(self.generateSample())
-
-        # Output
-        return [result[0] for result in results], [result[1] for result in results], [result[2] for result in results], [result[3] for result in results]
+acoustics_model = DeepModel(4)
+acoustics_model.load()
+acoustics_model = acoustics_model.to(device)
 
 
 class InvalidInputException(Exception):
@@ -126,7 +18,6 @@ class NoSampleFoundException(Exception):
     pass
 
 class PingerLocator:
-
     # Given Constants
     SAMPLING_FREQUENCY = 100000  # Sampling Frequency in Hz
     PINGER_DURATION = 0.004      # Duration of the ping in seconds
@@ -135,16 +26,21 @@ class PingerLocator:
     SPEED_OF_SOUND = 1531        # The speed of sound in whatever medium this code is being run for, in meters/second
     MICROPHONE_DISTANCE = 0.012  # The distance between the microphones in meters
 
-
     # Customizable Thresholds
     SEGMENT_SEARCH_SIZE = 0.005  # Size in seconds to do the first search with
     SEARCH_THRESHOLD = 1.5       # The minimum percent difference (expressed as a decimal) for a maximum value to contain a signal
 
-    def __init__(self, target_frequency, microphone_spacing):
-        #if target_frequency not in self.VALID_FREQUENCIES:
-        #    raise InvalidInputException("Invalid Input Frequency")
+    # Use the model loaded at the beginning of this script for ML
+    model = acoustics_model
 
-        self.MICROPHONE_DISTANCE = microphone_spacing
+    def __init__(self, target_frequency: int):
+        """Creates new instance of PingerLocator
+
+        Args:
+            target_frequency: The frequency in Hz of the ping
+        """
+        if target_frequency not in self.VALID_FREQUENCIES:
+            raise InvalidInputException("Invalid Input Frequency")
 
         # Setup the class variables
         self.target_frequency = target_frequency
@@ -165,7 +61,7 @@ class PingerLocator:
             # breaking the logic
             raise InvalidInputException("Invalid Preset: Pinger Duration longer than segment search size")
 
-    def search_segment(self, microphone_data):
+    def searchSegment(self, microphone_data: np.ndarray) -> float:
         """Searches input microphone data for a pulse and returns its location
         The input microphone data must conform to the constants declared in this class
 
@@ -174,7 +70,6 @@ class PingerLocator:
 
         Returns:
             The time in seconds of the start of the pulse
-
         """
 
         if len(microphone_data) != self.SAMPLE_SIZE * self.SAMPLING_FREQUENCY:
@@ -244,9 +139,9 @@ class PingerLocator:
 
         return (maximum_sample_index / self.SAMPLING_FREQUENCY)
 
-    def get_phase_angle(self, microphone_data):
-        """Gets the phase shift of the given microphone data
-        Note: This assumes that all of the input data contains the pulse
+    def getPhaseAngle(self, microphone_data: np.ndarray) -> float:
+        """Gets the phase angle of the pulse in the given microphone data
+        Note: This assumes that microphone_data is trimmed to contain only the pulse
 
         Args:
             microphone_data: A numpy array with the microphone data
@@ -259,7 +154,7 @@ class PingerLocator:
         frequency_offset = round(self.target_frequency * len(microphone_data) / self.SAMPLING_FREQUENCY)
         return np.angle(microphone_fft[frequency_offset])
 
-    def get_ping_indexes(self, microphone_1, microphone_2, microphone_3):
+    def getPingIndexes(self, microphone_1: np.ndarray, microphone_2: np.ndarray, microphone_3: np.ndarray) -> tuple[int, int]:
         """Locates the best location in the sample to find the phase shift
         This should not be used on large samples, since it does a fine search of the signals without doing a larger search first
 
@@ -287,6 +182,7 @@ class PingerLocator:
         assert microphone_1_maximum_sample_index != -1
 
         # Find a start and end index that must contain the ping in all three signals
+        # This can be done since we know that all micrphones are within 1/2 a wavelength of each other
         period_length = (1 / self.target_frequency) * self.SAMPLING_FREQUENCY
         start_index = microphone_1_maximum_sample_index + int(period_length)
         end_index = microphone_1_maximum_sample_index + pinger_sample_size - int(period_length)
@@ -295,15 +191,15 @@ class PingerLocator:
         return (start_index, end_index)
 
 
-    def get_signal_phase_difference(self, phase_angle_1, phase_angle_2):
-        """Gets the angle of the incoming signal from the first microphone
+    def getPhaseDifference(self, phase_angle_1: float, phase_angle_2: float) -> float:
+        """Gets the phase difference of the incoming signal between the two microphones
 
         Args:
             phase_angle_1: The phase shift of the first microphone's signal in radians
             phase_angle_2: The phase shift of the second microphone's signal in radians
 
         Returns:
-            The angle of the incoming signal in radians
+            The phase difference of the incoming signal in radians
         """
 
         phase_difference = phase_angle_2 - phase_angle_1
@@ -317,8 +213,8 @@ class PingerLocator:
         # Return the angle of the oncoming signal
         return phase_difference
 
-    def calc_phase_differences(self, center_microphone_data, x_microphone_data, y_microphone_data):
-        """Calculates the phase differences of an incoming signal from 3 microphones in a right triangle
+    def calcHeading(self, center_microphone_data: np.ndarray, x_microphone_data: np.ndarray, y_microphone_data: np.ndarray) -> np.ndarray:
+        """Calculates the heading of an incoming signal from 3 microphones in a right triangle
 
         Args:
             center_microphone_data: A numpy array with the samples from the center microphone
@@ -326,32 +222,28 @@ class PingerLocator:
             y_microphone_data: A numpy array with the samples from the microphone at an y offset of the center
 
         Returns:
-            A tuple with the x and y signal phase differences
+            A numpy array with three elements for the normalized x, y, and z heading
         """
 
-        # Get the location in the incoming signal of the pulse
-        search_indexes = self.get_ping_indexes(center_microphone_data, x_microphone_data, y_microphone_data)
+        # Get the location of the pulse in the incoming signal
+        search_indexes = self.getPingIndexes(center_microphone_data, x_microphone_data, y_microphone_data)
 
-        # Calculate the phase angle of each of the three signals of the pulse
-        center_phase_angle = self.get_phase_angle(center_microphone_data[search_indexes[0]:search_indexes[1]])
-        x_phase_angle = self.get_phase_angle(x_microphone_data[search_indexes[0]:search_indexes[1]])
-        y_phase_angle = self.get_phase_angle(y_microphone_data[search_indexes[0]:search_indexes[1]])
+        # Calculate the phase angle of the pulse for each of the three signals 
+        center_phase_angle = self.getPhaseAngle(center_microphone_data[search_indexes[0]:search_indexes[1]])
+        x_phase_angle = self.getPhaseAngle(x_microphone_data[search_indexes[0]:search_indexes[1]])
+        y_phase_angle = self.getPhaseAngle(y_microphone_data[search_indexes[0]:search_indexes[1]])
 
-        # Calculate the x and y angles of the heading
-        x_phase_difference = self.get_signal_phase_difference(center_phase_angle, x_phase_angle)
-        y_phase_difference = self.get_signal_phase_difference(center_phase_angle, y_phase_angle)
+        # Calculate the x and y phase differences
+        x_phase_difference = self.getPhaseDifference(center_phase_angle, x_phase_angle)
+        y_phase_difference = self.getPhaseDifference(center_phase_angle, y_phase_angle)
 
-        return (x_phase_difference, y_phase_difference)
+        # Use the ML model to find the approximate signal heading
+        model_input = np.array([self.MICROPHONE_DISTANCE * 100, self.target_frequency/10000, x_phase_difference, y_phase_difference])
+        predicted = self.model.evaluate(model_input)
 
-def generate_samples(num_samples=1024):
-    generator = SampleGenerator(num_samples)
-    inputs, label, ping_frequency, mic_spacing = generator.generateSamples()
+        # Normalize the predicted signal heading
+        signal_heading = predicted.copy()
+        signal_heading /= np.linalg.norm(signal_heading)
 
-    sample_data = []
+        return signal_heading
 
-    for sample in range(num_samples):
-        locator = PingerLocator(ping_frequency[sample], mic_spacing[sample])
-        x_phase_difference, y_phase_difference = locator.calc_phase_differences(inputs[sample][0], inputs[sample][2], inputs[sample][1])
-        sample_data.append({"mic_spacing": mic_spacing[sample], "ping_frequency": ping_frequency[sample], "ping_direction": label[sample], "x_phase_difference": x_phase_difference, "y_phase_difference": y_phase_difference})
-    
-    return sample_data
